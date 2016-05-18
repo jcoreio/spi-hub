@@ -6,8 +6,11 @@ const assert = require('assert')
 
 const _ = require('lodash')
 const fs = require('fs')
-const SPI = require('pi-spi')
 const ipc = require('socket-ipc')
+const wpi = require('wiring-pi')
+
+const DEFAULT_SPI_SPEED = 1000000 // 1MHz
+const CONFIG_FILE_PATH = '/etc/spi-hub.json'
 
 const IPC_PROTO_VERSION = 1
 
@@ -28,51 +31,86 @@ const DEVICE_MSG_OVERHEAD = 5
 const nodeVersion = process.version.split('.');
 const isNode6 = nodeVersion.length >= 3 && nodeVersion[0] >= 6;
 
-let server = undefined
+let ipcServer = undefined
 
 const busMap = new Map(); // busId -> Map<deviceId, deviceInfo>
 
-const devices = []
-
-main()
+let devicesListMessage = undefined
 
 function main() {
-  let busDevEntryPaths = process.argv.slice(2)
-  if(!busDevEntryPaths.length) {
-    busDevEntryPaths = fs.readdirSync('/dev')
-      .filter(entry => entry.startsWith('spi'))
-      .map(entry => `/dev/${entry}`)
-      .slice(0, 1)
-    if(!busDevEntryPaths.length) throw new Error('no spi devices found in /dev')
+  let configExists = false
+  try {
+    fs.accessSync(CONFIG_FILE_PATH)
+    configExists = true
+  } catch (err) { }
+
+  let buses = undefined
+  if(configExists) {
+    const config = JSON.parse(fs.readFileSync(CONFIG_FILE_PATH).toString())
+    buses = config.buses
+  } else {
+    let busDevEntryPaths = process.argv.slice(2)
+    if(!busDevEntryPaths.length) {
+      busDevEntryPaths = fs.readdirSync('/dev')
+        .filter(entry => entry.startsWith('spi'))
+        .map(entry => `/dev/${entry}`)
+        .slice(0, 1)
+      if(!busDevEntryPaths.length) throw new Error('no spi devices found in /dev')
+    }
+    buses = busDevEntryPaths.map(path => ({ path }))
   }
 
-  server = new ipc.MessageServer('/tmp/socket-spi-hub', { binary: true })
-  server.on('message', onIPCMessage)
-  server.on('connection', onIPCConnection)
-  server.start()
-  console.log('started message server')
+  buses.forEach((bus, index) => initSPIBus(_.assign(bus, { index })))
+  devicesListMessage = createDevicesListMessage()
 
-  busDevEntryPaths.forEach(handleSPIBus)
+  ipcServer = new ipc.MessageServer('/tmp/socket-spi-hub', { binary: true })
+  ipcServer.on('message', onIPCMessage)
+  ipcServer.on('connection', onIPCConnection)
+  ipcServer.start()
+  console.log('started message server')
 }
 
-function handleSPIBus(busDevicePath, busIndex) {
-  console.log(`initializing SPI bus at ${busDevicePath}...`)
+let gpioInitialized = false
+
+function initSPIBus(bus) {
+  console.log(`initializing SPI bus at ${bus.path}...`)
   try {
-    const fakeDevice = { index: 0, info: { device: 'iron-pi-cm8-mcu', version: '1.0.0' } };
+    wpi.wiringPiSPISetup(bus.index, bus.speed || DEFAULT_SPI_SPEED)
+
+    if(bus.irqPin != undefined) {
+      if(!gpioInitialized) {
+        wpi.setup('gpio')
+        gpioInitialized = true
+      }
+      wpi.pinMode(bus.irqPin, wpi.INPUT)
+      const activeLow = "low" === (bus.irqActive || '').toLowerCase()
+      wpi.wiringPiISR(bus.irqPin, activeLow ? wpi.INT_EDGE_FALLING : wpi.INT_EDGE_RISING, () => spiBusIRQ(bus))
+    }
+
+    const fakeDevice = { index: 0, info: { id: 'iron-pi-cm8-mcu', version: '1.0.0' } };
     const devices = new Map();
     devices.set(0, fakeDevice);
-    busMap.set(busIndex, {
-      spi: SPI.initialize(busDevicePath),
+    busMap.set(bus.index, {
+      config: bus,
       devices
     })
   } catch (err) {
-    console.error(`could not initialize SPI bus at ${busDevicePath}:`, err.stack)
+    console.error(`could not initialize SPI bus at ${bus.path}:`, err.stack)
   }
 }
 
-let devicesListMessage = createDevicesListMessage()
+function spiBusIRQ(bus) {
+  console.log(`spi bus ${bus.index} IRQ`)
+}
 
 function createDevicesListMessage() {
+  const devices = []
+  busMap.forEach((bus, busIndex) => {
+    bus.devices.forEach((device, deviceIndex) => {
+      devices.push({ bus: busIndex, device: deviceIndex, info: device.info })
+    })
+  })
+
   const bufDevicesList = stringToBuffer(JSON.stringify(devices))
   const msgDevicesList = allocBuffer(bufDevicesList.length + 2)
   msgDevicesList.writeUInt8(IPC_PROTO_VERSION, 0)
@@ -103,11 +141,10 @@ function onIPCMessage(event) {
 
     console.log('writing message to SPI bus', message.toString('utf8', IPC_DEVICE_MESSAGE_OVERHEAD))
 
-    bus.spi.write(encodeMessageToDevice(deviceIdx, DEVICE_MSG_MESSAGE_TO_DEVICE,
-        channelIdx, message, IPC_DEVICE_MESSAGE_OVERHEAD), err => {
-      if(err) console.error('could not write to SPI:', err.stack || err)
-      else console.log('successfully wrote SPI message')
-    });
+    const spiBuf = encodeMessageToDevice(deviceIdx, DEVICE_MSG_MESSAGE_TO_DEVICE,
+      channelIdx, message, IPC_DEVICE_MESSAGE_OVERHEAD)
+    wpi.wiringPiSPIDataRW(busIdx, spiBuf)
+    console.log('wrote message to SPI bus: ', spiBuf)
   } catch (err) {
     console.error('error handling IPC message: ', err.stack);
   }
@@ -135,6 +172,4 @@ function stringToBuffer(str) {
   return isNode6 ? Buffer.from(str) : new Buffer(str)
 }
 
-
-
-
+main()
