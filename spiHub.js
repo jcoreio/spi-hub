@@ -230,7 +230,8 @@ function onIPCMessage(event) {
 function encodeMessageToDevice(opts) {
   const msgPos = opts.msgPos || 0
   const messageLen = opts.message ? opts.message.length - msgPos : 0
-  const buffer =  allocBuffer(Math.max(messageLen, opts.bufLen || 0) + MSG_TO_DEVICE_OVERHEAD)
+  const requiredBufLen = Math.max(messageLen, opts.bufLen || 0) + MSG_TO_DEVICE_OVERHEAD
+  const buffer = allocBuffer(Math.max(requiredBufLen, DEFAULT_POLL_MSG_LENGTH))
   buffer.writeUInt8(opts.deviceId, 0)
   buffer.writeUInt8(opts.nextDeviceId, 1)
   buffer.writeUInt8(opts.cmd, 2)
