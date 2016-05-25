@@ -35,7 +35,7 @@ const DEVICE_CMD_MESSAGE_FROM_DEVICE  = 2
 //const DEVICE_CMD_DEVICE_INFO_RESPONSE = 4
 
 const MSG_TO_DEVICE_OVERHEAD = 6
-const MSG_FROM_DEVICE_OVERHEAD = 8
+const MSG_FROM_DEVICE_OVERHEAD = 9
 
 const nodeVersion = process.version.split('.');
 const isNode6 = nodeVersion.length >= 3 && nodeVersion[0] >= 6;
@@ -154,8 +154,8 @@ function initSPIBus(bus) {
     }
 
     const devicesArr = [
-      { id: 1, info: { id: 'iron-pi-cm8-mcu', version: '1.0.0' }, txQueue: [] }
-      /*{ id: 2, info: { id: 'iron-pi-io16',    version: '1.0.0' }, txQueue: [] }*/]
+      { id: 1, info: { id: 'iron-pi-cm8-mcu', version: '1.0.0' }, txQueue: [] },
+      { id: 2, info: { id: 'iron-pi-io16',    version: '1.0.0' }, txQueue: [] } ]
     const devicesMap = new Map()
     devicesArr.forEach(device => devicesMap.set(device.id, device))
     busMap.set(bus.id, {
@@ -229,8 +229,10 @@ function onIPCMessage(event) {
 
 function encodeMessageToDevice(opts) {
   const msgPos = opts.msgPos || 0
-  const messageLen = opts.message ? opts.message.length - msgPos : 0
-  const requiredBufLen = Math.max(messageLen, opts.bufLen || 0) + MSG_TO_DEVICE_OVERHEAD
+  const messageLen = (opts.message ? opts.message.length - msgPos : 0);
+  const txBufRequiredLen = messageLen + MSG_TO_DEVICE_OVERHEAD;
+  const rxRequiredLen = opts.msgLen ? opts.msgLen + MSG_FROM_DEVICE_OVERHEAD : DEFAULT_POLL_MSG_LENGTH;
+  const requiredBufLen = Math.max(txBufRequiredLen, rxRequiredLen);
   const buffer = allocBuffer(Math.max(requiredBufLen, DEFAULT_POLL_MSG_LENGTH))
   buffer.writeUInt8(opts.deviceId, 0)
   buffer.writeUInt8(opts.nextDeviceId, 1)
@@ -244,12 +246,13 @@ function encodeMessageToDevice(opts) {
 
 function decodeMessageFromDevice(buf) {
   if(buf.length < MSG_FROM_DEVICE_OVERHEAD) return undefined
-  const deviceId = buf.readUInt8(0)
-  const queueCount = buf.readUInt8(1)
-  const nextMsgLen = buf.readUInt16LE(2)
-  const cmd = buf.readUInt8(4)
-  const channel = buf.readUInt8(5)
-  const msgLen = buf.readUInt16LE(6)
+  // Skip one empty byte
+  const deviceId = buf.readUInt8(1)
+  const queueCount = buf.readUInt8(2)
+  const nextMsgLen = buf.readUInt16LE(3)
+  const cmd = buf.readUInt8(5)
+  const channel = buf.readUInt8(6)
+  const msgLen = buf.readUInt16LE(7)
   const dataLen = Math.min(msgLen, buf.length - MSG_FROM_DEVICE_OVERHEAD)
   const data = msgLen ? allocBuffer(dataLen) : undefined
   if(data)
