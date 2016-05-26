@@ -1,6 +1,6 @@
 {
   "name": "spi-hub",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Interact with an SPI device from multiple processes",
   "main": "spiHub.js",
   "scripts": {
