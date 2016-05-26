@@ -18,8 +18,6 @@ const DEFAULT_POLL_MSG_LENGTH = 40
 const DEFAULT_SPI_SPEED = 1000000 // 1MHz
 const CONFIG_FILE_PATH = '/etc/spi-hub.json'
 
-const IRQ_SERVICE_DEFAULT_LENGTH = 20
-
 const IPC_PROTO_VERSION = 1
 const IPC_DEVICE_MESSAGE_OVERHEAD = 7
 
@@ -73,6 +71,7 @@ function main() {
   ipcServer = new ipc.MessageServer('/tmp/socket-spi-hub', { binary: true })
   ipcServer.on('message', onIPCMessage)
   ipcServer.on('connection', onIPCConnection)
+  ipcServer.on('error', err => console.error('ipc server error: ', err.stack || err))
   ipcServer.start()
   console.log('started message server')
 
@@ -89,12 +88,11 @@ function serviceBus(bus) {
   if(!devicesArr.length) return;
   for(let deviceIdx = 0; deviceIdx < devicesArr.length; ++deviceIdx) {
     const device = devicesArr[deviceIdx]
-    console.log('service device ', bus.id, typeof bus.id)
     let spiBuf = undefined
     if(bus.nextDeviceId !== device.id) {
       // Select the device
       spiBuf = encodeMessageToDevice({ deviceId: 0, nextDeviceId: device.id, cmd: SPI_HUB_CMD_NONE })
-      console.log('initial request to device', spiBuf)
+      //console.log('initial request to device', spiBuf)
       wpi.wiringPiSPIDataRW(bus.id, spiBuf)
     }
 
@@ -120,7 +118,7 @@ function serviceBus(bus) {
       const response = decodeMessageFromDevice(spiBuf)
       const deviceMatches = response.deviceId === device.id
       device.nextMsgLen = deviceMatches ? response.nextMsgLen : undefined
-      console.log('response from device: ', response)
+      //console.log('response from device: ', response)
       if(!response.errCode) {
         if(deviceMatches) {
           handleResponseFromDevice(bus, response)
@@ -200,12 +198,14 @@ function onIPCMessage(event) {
   const message = event.data
   try {
     assert(message.length >= MSG_TO_DEVICE_OVERHEAD, 'message is too short')
-    const version     = message.readUInt8(0)
-    const msg         = message.readUInt8(1)
-    const busId       = message.readUInt8(2)
-    const deviceId    = message.readUInt8(3)
-    const channelId   = message.readUInt8(4)
-    const msgDeDupeId = message.readUInt16LE(5)
+    let pos = 0
+    const version     = message.readUInt8(pos++)
+    const msg         = message.readUInt8(pos++)
+    const busId       = message.readUInt8(pos++)
+    const deviceId    = message.readUInt8(pos++)
+    const channelId   = message.readUInt8(pos++)
+    const msgDeDupeId = message.readUInt16LE(pos)
+    pos += 2
     assert(IPC_PROTO_VERSION === version, `unexpected ipc protocol version: ${version}`)
     assert(SPI_HUB_CMD_MSG_TO_DEVICE === msg, `unexpected ipc message id: ${msg}`)
     const bus = busMap.get(busId);
@@ -219,16 +219,15 @@ function onIPCMessage(event) {
       txQueue[existMsgId].message = message
     else
       txQueue.push({ msgDeDupeId, deviceId, channelId, message,
-        msgLen: message.length - IPC_DEVICE_MESSAGE_OVERHEAD,
-        msgPos: IPC_DEVICE_MESSAGE_OVERHEAD })
+              msgLen: message.length - pos, msgPos: pos })
   } catch (err) {
     console.error('error handling IPC message: ', err.stack);
   }
 }
 
 function handleResponseFromDevice(bus, response) {
-  const dataLen = (response.message || {}).length || 0
-  const ipcMsg = allocBuffer(dataLen + IPC_DEVICE_MESSAGE_OVERHEAD)
+  const msgLen = (response.message || {}).length || 0
+  const ipcMsg = allocBuffer(msgLen + IPC_DEVICE_MESSAGE_OVERHEAD)
   let pos = 0
   ipcMsg.writeUInt8(IPC_PROTO_VERSION, pos++)
   ipcMsg.writeUInt8(SPI_HUB_CMD_MSG_FROM_DEVICE, pos++)
@@ -244,23 +243,25 @@ function handleResponseFromDevice(bus, response) {
 
 function encodeMessageToDevice(opts) {
   const msgPos = opts.msgPos || 0
-  const messageLen = (opts.message ? opts.message.length - msgPos : 0);
-  const txRequiredLen = messageLen + MSG_TO_DEVICE_OVERHEAD;
-  const rxRequiredLen = opts.msgLen ? opts.msgLen + MSG_FROM_DEVICE_OVERHEAD : 0;
+  const msgLen = opts.message ? opts.message.length - msgPos : 0
+  const txRequiredLen = msgLen + MSG_TO_DEVICE_OVERHEAD;
+  const rxRequiredLen = opts.msgLen ? opts.msgLen + MSG_FROM_DEVICE_OVERHEAD : 0
   const buffer = allocBuffer(Math.max(txRequiredLen, rxRequiredLen))
-  buffer.writeUInt8(opts.deviceId, 0)
-  buffer.writeUInt8(opts.nextDeviceId, 1)
-  buffer.writeUInt8(opts.cmd, 2)
-  buffer.writeUInt8(opts.channelId, 3)
-  buffer.writeUInt16LE(messageLen, 4)
+  let pos = 0
+  buffer.writeUInt8(opts.deviceId, pos++)
+  buffer.writeUInt8(opts.nextDeviceId, pos++)
+  buffer.writeUInt8(opts.cmd, pos++)
+  buffer.writeUInt8(opts.channelId, pos++)
+  buffer.writeUInt16LE(msgLen, pos)
+  pos += 2
   if(opts.message)
-    opts.message.copy(buffer, MSG_TO_DEVICE_OVERHEAD, msgPos)
+    opts.message.copy(buffer, pos, msgPos)
   return buffer
 }
 
 function decodeMessageFromDevice(buf) {
   if(buf.length < MSG_FROM_DEVICE_OVERHEAD) {
-    return { errMsg: 'message is too short to process', errCode: 'MSG_TOO_SHORT' };
+    return { errMsg: 'message is too short to process', errCode: 'MSG_TOO_SHORT' }
   }
   // Skip one empty byte
   let pos = 1
@@ -269,18 +270,18 @@ function decodeMessageFromDevice(buf) {
   const nextMsgLen = buf.readUInt16LE(pos)
   pos += 2
   const cmd = buf.readUInt8(pos++)
-  const channel = buf.readUInt8(pos++)
+  const channelId = buf.readUInt8(pos++)
   const msgLen = buf.readUInt16LE(pos)
   pos += 2
-  const decodedMsg = { deviceId, queueCount, nextMsgLen, cmd, channel, msgLen };
-  const rxDataLen = buf.length - pos
-  if(rxDataLen >= msgLen) {
+  const decodedMsg = { deviceId, queueCount, nextMsgLen, cmd, channelId, msgLen }
+  const rxMsgLen = buf.length - pos
+  if(rxMsgLen >= msgLen) {
     if(msgLen) {
-      decodedMsg.data = allocBuffer(msgLen)
-      buf.copy(decodedMsg.data, 0, MSG_FROM_DEVICE_OVERHEAD, MSG_FROM_DEVICE_OVERHEAD + msgLen)
+      decodedMsg.message = allocBuffer(msgLen)
+      buf.copy(decodedMsg.message, 0, MSG_FROM_DEVICE_OVERHEAD, MSG_FROM_DEVICE_OVERHEAD + msgLen)
     }
   } else {
-    _.assign(decodedMsg, { errMsg: 'data was truncated', errCode: 'DATA_TRUNCATED' });
+    _.assign(decodedMsg, { errMsg: 'message was truncated', errCode: 'MESSAGE_TRUNCATED' })
   }
   return decodedMsg;
 }
