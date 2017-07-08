@@ -152,7 +152,8 @@ function initSPIBus(bus) {
 
     const devicesArr = [
       { id: 1, info: { id: 'iron-pi-cm8-mcu', version: '1.0.0' }, txQueue: [] },
-      { id: 2, info: { id: 'iron-pi-io16',    version: '1.0.0' }, txQueue: [] } ]
+      //{ id: 2, info: { id: 'iron-pi-io16',    version: '1.0.0' }, txQueue: [] }
+    ]
     const devicesMap = new Map()
     devicesArr.forEach(device => devicesMap.set(device.id, device))
     busMap.set(bus.id, {
