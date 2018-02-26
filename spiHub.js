@@ -83,6 +83,8 @@ function main() {
   }
 }
 
+const devicesInitialized = []
+
 function serviceBus(bus) {
   const devicesArr = bus.devicesArr
   if(!devicesArr.length) return;
@@ -97,12 +99,15 @@ function serviceBus(bus) {
     }
 
     const txQueue = device.txQueue
-    do {
+    while(!devicesInitialized[deviceIdx] || txQueue.length) {
+    //do {
+      devicesInitialized[deviceIdx] = true
+
       let txMessage = txQueue[0]
-      if(txQueue.length)
+      if (txQueue.length)
         txQueue.splice(0, 1)
       let nextDeviceIdx = txQueue.length ? deviceIdx : deviceIdx + 1
-      if(nextDeviceIdx >= devicesArr.length)
+      if (nextDeviceIdx >= devicesArr.length)
         nextDeviceIdx = 0
       const nextDevice = devicesArr[nextDeviceIdx]
       spiBuf = encodeMessageToDevice(_.assign({}, txMessage, {
@@ -111,16 +116,16 @@ function serviceBus(bus) {
         cmd: txMessage ? SPI_HUB_CMD_MSG_TO_DEVICE : SPI_HUB_CMD_NONE,
         msgLen: device.nextMsgLen || DEFAULT_POLL_MSG_LENGTH
       }))
-      //console.log('sending to device: ', spiBuf);
+      console.log('sending to device: ', spiBuf);
       wpi.wiringPiSPIDataRW(bus.id, spiBuf)
-      //console.log('raw device response:', spiBuf);
+      console.log('raw device response:', spiBuf);
 
       const response = decodeMessageFromDevice(spiBuf)
       const deviceMatches = response.deviceId === device.id
       device.nextMsgLen = deviceMatches ? response.nextMsgLen : undefined
       //console.log('response from device: ', response)
-      if(!response.errCode) {
-        if(deviceMatches) {
+      if (!response.errCode) {
+        if (deviceMatches) {
           handleResponseFromDevice(bus, response)
         } else {
           console.log(`wrong device id in response from device: expected ${device.id}, got ${response.deviceId}`)
@@ -130,7 +135,8 @@ function serviceBus(bus) {
       }
 
       bus.nextDeviceId = nextDevice.id
-    } while(txQueue.length)
+    }
+    //} while(txQueue.length)
   }
 }
 
@@ -196,6 +202,7 @@ function onIPCConnection(connection) {
 }
 
 function onIPCMessage(event) {
+  console.log('got ipc message')
   const message = event.data
   try {
     assert(message.length >= MSG_TO_DEVICE_OVERHEAD, 'message is too short')
