@@ -4,12 +4,12 @@
 
 const assert = require('assert')
 
-const Fiber = require('fibers')
-const sleep = require('fiber-sleep')
 const _ = require('lodash')
 const fs = require('fs')
 const ipc = require('socket-ipc')
 const wpi = require('wiring-pi')
+
+const {readDeviceIdAndAccessCode} = require('./readDeviceId')
 
 const DEFAULT_POLL_INTERVAL = 200 // 5Hz poll interval
 const POLL_MIN_SLEEP = 50
@@ -40,9 +40,9 @@ const busMap = new Map(); // busId -> Map<deviceId, deviceInfo>
 
 let devicesListMessage = undefined
 
-const mainFiber = Fiber(main)
+const sleep = (time) => new Promise((resolve) => setTimeout(resolve, time))
 
-function main() {
+async function main() {
   let configExists = false
   try {
     fs.accessSync(CONFIG_FILE_PATH)
@@ -66,7 +66,7 @@ function main() {
   }
 
   buses.forEach((bus, id) => initSPIBus(_.defaults({}, bus, { id })))
-  devicesListMessage = createDevicesListMessage()
+  devicesListMessage = await createDevicesListMessage()
 
   ipcServer = new ipc.MessageServer('/tmp/socket-spi-hub', { binary: true })
   ipcServer.on('message', onIPCMessage)
@@ -79,7 +79,7 @@ function main() {
     const pollStart = Date.now()
     busMap.forEach(bus => serviceBus(bus))
     const elapsed = Date.now() - pollStart
-    sleep(Math.max(POLL_MIN_SLEEP, DEFAULT_POLL_INTERVAL - elapsed))
+    await sleep(Math.max(POLL_MIN_SLEEP, DEFAULT_POLL_INTERVAL - elapsed))
   }
 }
 
@@ -116,9 +116,9 @@ function serviceBus(bus) {
         cmd: txMessage ? SPI_HUB_CMD_MSG_TO_DEVICE : SPI_HUB_CMD_NONE,
         msgLen: device.nextMsgLen || DEFAULT_POLL_MSG_LENGTH
       }))
-      console.log('sending to device: ', spiBuf);
+      //console.log('sending to device: ', spiBuf);
       wpi.wiringPiSPIDataRW(bus.id, spiBuf)
-      console.log('raw device response:', spiBuf);
+      //console.log('raw device response:', spiBuf);
 
       const response = decodeMessageFromDevice(spiBuf)
       const deviceMatches = response.deviceId === device.id
@@ -181,7 +181,9 @@ function spiBusIRQ(bus) {
   // TODO: Wake handler fiber
 }
 
-function createDevicesListMessage() {
+async function createDevicesListMessage() {
+  const {deviceId, accessCode} = await readDeviceIdAndAccessCode()
+
   const devices = []
   busMap.forEach((bus, busId) => {
     bus.devicesArr.forEach(device => {
@@ -189,7 +191,7 @@ function createDevicesListMessage() {
     })
   })
 
-  const bufDevicesList = stringToBuffer(JSON.stringify(devices))
+  const bufDevicesList = stringToBuffer(JSON.stringify({devices, deviceId, accessCode}))
   const msgDevicesList = allocBuffer(bufDevicesList.length + 2)
   msgDevicesList.writeUInt8(IPC_PROTO_VERSION, 0)
   msgDevicesList.writeUInt8(SPI_HUB_CMD_DEVICES_LIST, 1)
@@ -202,7 +204,7 @@ function onIPCConnection(connection) {
 }
 
 function onIPCMessage(event) {
-  console.log('got ipc message')
+  //console.log('got ipc message')
   const message = event.data
   try {
     assert(message.length >= MSG_TO_DEVICE_OVERHEAD, 'message is too short')
@@ -304,4 +306,8 @@ function stringToBuffer(str) {
   return isNode6 ? Buffer.from(str) : new Buffer(str)
 }
 
-mainFiber.run()
+main()
+  .catch((err) => {
+    console.error(err.stack || err)
+    process.exit(1)
+  })
