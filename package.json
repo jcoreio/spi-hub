@@ -4,6 +4,9 @@
   "description": "Interact with an SPI device from multiple processes",
   "main": "spiHub.js",
   "scripts": {
+    "lint": "eslint *.js",
+    "lint:fix": "eslint --fix *.js",
+    "prepublish": "npm run lint",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -19,6 +22,14 @@
     "url": "https://github.com/jcoreio/spi-hub/issues"
   },
   "homepage": "https://github.com/jcoreio/spi-hub#readme",
+  "devDependencies": {
+    "eslint": "^5.8.0",
+    "eslint-config-standard": "^12.0.0",
+    "eslint-plugin-import": "^2.14.0",
+    "eslint-plugin-node": "^8.0.0",
+    "eslint-plugin-promise": "^4.0.1",
+    "eslint-plugin-standard": "^4.0.0"
+  },
   "dependencies": {
     "lodash": "^4.12.0",
     "socket-ipc": "^1.0.0",

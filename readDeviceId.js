@@ -15,11 +15,10 @@ const ACCESS_CODE_OFFSET = 32
 
 const pause = () => new Promise(resolve => setTimeout(resolve, 10))
 
-async function readDeviceIdAndAccessCode() {
-
+async function readDeviceIdAndAccessCode () {
   const fd = wpi.wiringPiI2CSetup(EEPROM_I2C_ADDR)
 
-  async function readByte(pos) {
+  async function readByte (pos) {
     await pause()
     return wpi.wiringPiI2CReadReg8(fd, pos)
   }
@@ -29,7 +28,7 @@ async function readDeviceIdAndAccessCode() {
   const deviceIdLength = await readByte(pos++)
 
   const deviceIdCharCodes = []
-  for(let strPos = 0; strPos < DEVICE_ID_LENGTH; ++strPos) {
+  for (let strPos = 0; strPos < DEVICE_ID_LENGTH; ++strPos) {
     deviceIdCharCodes[strPos] = await readByte(pos++)
   }
   const deviceId = String.fromCharCode(...deviceIdCharCodes)
@@ -39,19 +38,19 @@ async function readDeviceIdAndAccessCode() {
   const accessCodeLength = await readByte(pos++)
 
   const accessCodeCharCodes = []
-  for(let strPos = 0; strPos < ACCESS_CODE_LENGTH; ++strPos) {
+  for (let strPos = 0; strPos < ACCESS_CODE_LENGTH; ++strPos) {
     accessCodeCharCodes[strPos] = await readByte(pos++)
   }
   const accessCode = String.fromCharCode(...accessCodeCharCodes)
 
-  assert.equal(deviceIdPreamble, DEVICE_ID_PREAMBLE, 'Device ID preamble did not match')
-  assert.equal(deviceIdLength, DEVICE_ID_LENGTH, 'Device ID length did not match')
+  assert.strictEqual(deviceIdPreamble, DEVICE_ID_PREAMBLE, 'Device ID preamble did not match')
+  assert.strictEqual(deviceIdLength, DEVICE_ID_LENGTH, 'Device ID length did not match')
 
-  assert.equal(accessCodePreamble, ACCESS_CODE_PREAMBLE, 'Access code preamble did not match')
-  assert.equal(accessCodeLength, ACCESS_CODE_LENGTH, 'Access code length did not match')
+  assert.strictEqual(accessCodePreamble, ACCESS_CODE_PREAMBLE, 'Access code preamble did not match')
+  assert.strictEqual(accessCodeLength, ACCESS_CODE_LENGTH, 'Access code length did not match')
 
   console.log(`Device ID: ${deviceId} Access Code: ${accessCode}`)
-  return {deviceId, accessCode}
+  return { deviceId, accessCode }
 }
 
-module.exports = {readDeviceIdAndAccessCode}
+module.exports = { readDeviceIdAndAccessCode }

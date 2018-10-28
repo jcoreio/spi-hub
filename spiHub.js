@@ -9,7 +9,7 @@ const fs = require('fs')
 const ipc = require('socket-ipc')
 const wpi = require('wiring-pi')
 
-const {readDeviceIdAndAccessCode} = require('./readDeviceId')
+const { readDeviceIdAndAccessCode } = require('./readDeviceId')
 
 const DEFAULT_POLL_INTERVAL = 200 // 5Hz poll interval
 const POLL_MIN_SLEEP = 50
@@ -22,42 +22,42 @@ const IPC_PROTO_VERSION = 1
 const IPC_DEVICE_MESSAGE_OVERHEAD = 7
 
 // Commands that are valid both on the SPI bus and on the IPC socket
-const SPI_HUB_CMD_NONE            = 0
-const SPI_HUB_CMD_MSG_TO_DEVICE   = 1
+const SPI_HUB_CMD_NONE = 0
+const SPI_HUB_CMD_MSG_TO_DEVICE = 1
 const SPI_HUB_CMD_MSG_FROM_DEVICE = 2
 // Commands that are only valid on the IPC socket
-const SPI_HUB_CMD_DEVICES_LIST    = 100
+const SPI_HUB_CMD_DEVICES_LIST = 100
 
 const MSG_TO_DEVICE_OVERHEAD = 6
 const MSG_FROM_DEVICE_OVERHEAD = 9
 
-let ipcServer = undefined
+let ipcServer
 
-const busMap = new Map(); // busId -> Map<deviceId, deviceInfo>
+const busMap = new Map() // busId -> Map<deviceId, deviceInfo>
 
-let devicesListMessage = undefined
+let devicesListMessage
 
 const sleep = (time) => new Promise((resolve) => setTimeout(resolve, time))
 
-async function main() {
+async function main () {
   let configExists = false
   try {
     fs.accessSync(CONFIG_FILE_PATH)
     configExists = true
   } catch (err) { }
 
-  let buses = undefined
-  if(configExists) {
+  let buses
+  if (configExists) {
     const config = JSON.parse(fs.readFileSync(CONFIG_FILE_PATH).toString())
     buses = config.buses
   } else {
     let busDevEntryPaths = process.argv.slice(2)
-    if(!busDevEntryPaths.length) {
+    if (!busDevEntryPaths.length) {
       busDevEntryPaths = fs.readdirSync('/dev')
         .filter(entry => entry.startsWith('spi'))
         .map(entry => `/dev/${entry}`)
         .slice(0, 1)
-      if(!busDevEntryPaths.length) throw new Error('no spi devices found in /dev')
+      if (!busDevEntryPaths.length) throw new Error('no spi devices found in /dev')
     }
     buses = busDevEntryPaths.map(path => ({ path }))
   }
@@ -72,7 +72,7 @@ async function main() {
   ipcServer.start()
   console.log('started message server')
 
-  while(true) {
+  while (true) {
     const pollStart = Date.now()
     busMap.forEach(bus => serviceBus(bus))
     const elapsed = Date.now() - pollStart
@@ -82,30 +82,28 @@ async function main() {
 
 const devicesInitialized = []
 
-function serviceBus(bus) {
+function serviceBus (bus) {
   const devicesArr = bus.devicesArr
-  if(!devicesArr.length) return;
-  for(let deviceIdx = 0; deviceIdx < devicesArr.length; ++deviceIdx) {
+  if (!devicesArr.length) return
+  for (let deviceIdx = 0; deviceIdx < devicesArr.length; ++deviceIdx) {
     const device = devicesArr[deviceIdx]
-    let spiBuf = undefined
-    if(bus.nextDeviceId !== device.id) {
+    let spiBuf
+    if (bus.nextDeviceId !== device.id) {
       // Select the device
       spiBuf = encodeMessageToDevice({ deviceId: 0, nextDeviceId: device.id, cmd: SPI_HUB_CMD_NONE })
-      //console.log('initial request to device', spiBuf)
+      // console.log('initial request to device', spiBuf)
       wpi.wiringPiSPIDataRW(bus.id, spiBuf)
     }
 
     const txQueue = device.txQueue
-    while(!devicesInitialized[deviceIdx] || txQueue.length) {
-    //do {
+    while (!devicesInitialized[deviceIdx] || txQueue.length) {
+    // do {
       devicesInitialized[deviceIdx] = true
 
       let txMessage = txQueue[0]
-      if (txQueue.length)
-        txQueue.splice(0, 1)
+      if (txQueue.length) { txQueue.splice(0, 1) }
       let nextDeviceIdx = txQueue.length ? deviceIdx : deviceIdx + 1
-      if (nextDeviceIdx >= devicesArr.length)
-        nextDeviceIdx = 0
+      if (nextDeviceIdx >= devicesArr.length) { nextDeviceIdx = 0 }
       const nextDevice = devicesArr[nextDeviceIdx]
       spiBuf = encodeMessageToDevice(_.assign({}, txMessage, {
         deviceId: device.id,
@@ -113,14 +111,14 @@ function serviceBus(bus) {
         cmd: txMessage ? SPI_HUB_CMD_MSG_TO_DEVICE : SPI_HUB_CMD_NONE,
         msgLen: device.nextMsgLen || DEFAULT_POLL_MSG_LENGTH
       }))
-      //console.log('sending to device: ', spiBuf);
+      // console.log('sending to device: ', spiBuf);
       wpi.wiringPiSPIDataRW(bus.id, spiBuf)
-      //console.log('raw device response:', spiBuf);
+      // console.log('raw device response:', spiBuf);
 
       const response = decodeMessageFromDevice(spiBuf)
       const deviceMatches = response.deviceId === device.id
       device.nextMsgLen = deviceMatches ? response.nextMsgLen : undefined
-      //console.log('response from device: ', response)
+      // console.log('response from device: ', response)
       if (!response.errCode) {
         if (deviceMatches) {
           handleResponseFromDevice(bus, response)
@@ -133,29 +131,29 @@ function serviceBus(bus) {
 
       bus.nextDeviceId = nextDevice.id
     }
-    //} while(txQueue.length)
+    // } while(txQueue.length)
   }
 }
 
 let gpioInitialized = false
 
-function initSPIBus(bus) {
+function initSPIBus (bus) {
   try {
     wpi.wiringPiSPISetup(bus.id, bus.speed || DEFAULT_SPI_SPEED)
 
-    if(bus.irqPin != undefined) {
-      if(!gpioInitialized) {
+    if (bus.irqPin != null) {
+      if (!gpioInitialized) {
         wpi.setup('gpio')
         gpioInitialized = true
       }
       wpi.pinMode(bus.irqPin, wpi.INPUT)
-      const activeLow = 'low' === (bus.irqActive || '').toLowerCase()
+      const activeLow = (bus.irqActive || '').toLowerCase() === 'low'
       wpi.wiringPiISR(bus.irqPin, activeLow ? wpi.INT_EDGE_FALLING : wpi.INT_EDGE_RISING, () => spiBusIRQ(bus))
     }
 
     const devicesArr = [
-      { id: 1, info: { id: 'iron-pi-cm8-mcu', version: '1.0.0' }, txQueue: [] },
-      //{ id: 2, info: { id: 'iron-pi-io16',    version: '1.0.0' }, txQueue: [] }
+      { id: 1, info: { id: 'iron-pi-cm8-mcu', version: '1.0.0' }, txQueue: [] }
+      // { id: 2, info: { id: 'iron-pi-io16',    version: '1.0.0' }, txQueue: [] }
     ]
     const devicesMap = new Map()
     devicesArr.forEach(device => devicesMap.set(device.id, device))
@@ -172,14 +170,13 @@ function initSPIBus(bus) {
 
 const busIRQs = []
 
-function spiBusIRQ(bus) {
-  if(!_.includes(busIRQs, bus.id))
-    busIRQs.push(bus.id)
+function spiBusIRQ (bus) {
+  if (!_.includes(busIRQs, bus.id)) { busIRQs.push(bus.id) }
   // TODO: Wake handler fiber
 }
 
-async function createDevicesListMessage() {
-  const {deviceId, accessCode} = await readDeviceIdAndAccessCode()
+async function createDevicesListMessage () {
+  const { deviceId, accessCode } = await readDeviceIdAndAccessCode()
 
   const devices = []
   busMap.forEach((bus, busId) => {
@@ -188,7 +185,7 @@ async function createDevicesListMessage() {
     })
   })
 
-  const bufDevicesList = Buffer.from(JSON.stringify({devices, deviceId, accessCode}))
+  const bufDevicesList = Buffer.from(JSON.stringify({ devices, deviceId, accessCode }))
   const msgDevicesList = Buffer.alloc(bufDevicesList.length + 2)
   msgDevicesList.writeUInt8(IPC_PROTO_VERSION, 0)
   msgDevicesList.writeUInt8(SPI_HUB_CMD_DEVICES_LIST, 1)
@@ -196,43 +193,46 @@ async function createDevicesListMessage() {
   return msgDevicesList
 }
 
-function onIPCConnection(connection) {
+function onIPCConnection (connection) {
   connection.send(devicesListMessage)
 }
 
-function onIPCMessage(event) {
-  //console.log('got ipc message')
+function onIPCMessage (event) {
+  // console.log('got ipc message')
   const message = event.data
   try {
     assert(message.length >= MSG_TO_DEVICE_OVERHEAD, 'message is too short')
     let pos = 0
-    const version     = message.readUInt8(pos++)
-    const msg         = message.readUInt8(pos++)
-    const busId       = message.readUInt8(pos++)
-    const deviceId    = message.readUInt8(pos++)
-    const channelId   = message.readUInt8(pos++)
+    const version = message.readUInt8(pos++)
+    const msg = message.readUInt8(pos++)
+    const busId = message.readUInt8(pos++)
+    const deviceId = message.readUInt8(pos++)
+    const channelId = message.readUInt8(pos++)
     const msgDeDupeId = message.readUInt16LE(pos)
     pos += 2
     assert(IPC_PROTO_VERSION === version, `unexpected ipc protocol version: ${version}`)
     assert(SPI_HUB_CMD_MSG_TO_DEVICE === msg, `unexpected ipc message id: ${msg}`)
-    const bus = busMap.get(busId);
-    assert(bus, `SPI bus not found at id ${busId}`);
-    const device = bus.devicesMap.get(deviceId);
+    const bus = busMap.get(busId)
+    assert(bus, `SPI bus not found at id ${busId}`)
+    const device = bus.devicesMap.get(deviceId)
     assert(device, `device not found at bus ${busId}, device ${deviceId}`)
 
     const txQueue = device.txQueue
     const existMsgId = msgDeDupeId ? txQueue.findIndex(queueItem => queueItem.msgDeDupeId === msgDeDupeId) : -1
-    if(existMsgId >= 0)
-      txQueue[existMsgId].message = message
-    else
-      txQueue.push({ msgDeDupeId, deviceId, channelId, message,
-              msgLen: message.length - pos, msgPos: pos })
+    if (existMsgId >= 0) { txQueue[existMsgId].message = message } else {
+      txQueue.push({ msgDeDupeId,
+        deviceId,
+        channelId,
+        message,
+        msgLen: message.length - pos,
+        msgPos: pos })
+    }
   } catch (err) {
-    console.error('error handling IPC message: ', err.stack);
+    console.error('error handling IPC message: ', err.stack)
   }
 }
 
-function handleResponseFromDevice(bus, response) {
+function handleResponseFromDevice (bus, response) {
   const msgLen = (response.message || {}).length || 0
   const ipcMsg = Buffer.alloc(msgLen + IPC_DEVICE_MESSAGE_OVERHEAD)
   let pos = 0
@@ -243,15 +243,14 @@ function handleResponseFromDevice(bus, response) {
   ipcMsg.writeUInt8(response.channelId, pos++)
   ipcMsg.writeUInt16LE(0, pos) // message de-dupe id, not used
   pos += 2
-  if(response.message)
-    response.message.copy(ipcMsg, pos)
+  if (response.message) { response.message.copy(ipcMsg, pos) }
   ipcServer.send(ipcMsg)
 }
 
-function encodeMessageToDevice(opts) {
+function encodeMessageToDevice (opts) {
   const msgPos = opts.msgPos || 0
   const msgLen = opts.message ? opts.message.length - msgPos : 0
-  const txRequiredLen = msgLen + MSG_TO_DEVICE_OVERHEAD;
+  const txRequiredLen = msgLen + MSG_TO_DEVICE_OVERHEAD
   const rxRequiredLen = opts.msgLen ? opts.msgLen + MSG_FROM_DEVICE_OVERHEAD : 0
   const buffer = Buffer.alloc(Math.max(txRequiredLen, rxRequiredLen))
   let pos = 0
@@ -261,13 +260,12 @@ function encodeMessageToDevice(opts) {
   buffer.writeUInt8(opts.channelId, pos++)
   buffer.writeUInt16LE(msgLen, pos)
   pos += 2
-  if(opts.message)
-    opts.message.copy(buffer, pos, msgPos)
+  if (opts.message) { opts.message.copy(buffer, pos, msgPos) }
   return buffer
 }
 
-function decodeMessageFromDevice(buf) {
-  if(buf.length < MSG_FROM_DEVICE_OVERHEAD) {
+function decodeMessageFromDevice (buf) {
+  if (buf.length < MSG_FROM_DEVICE_OVERHEAD) {
     return { errMsg: 'message is too short to process', errCode: 'MSG_TOO_SHORT' }
   }
   // Skip one empty byte
@@ -282,15 +280,15 @@ function decodeMessageFromDevice(buf) {
   pos += 2
   const decodedMsg = { deviceId, queueCount, nextMsgLen, cmd, channelId, msgLen }
   const rxMsgLen = buf.length - pos
-  if(rxMsgLen >= msgLen) {
-    if(msgLen) {
+  if (rxMsgLen >= msgLen) {
+    if (msgLen) {
       decodedMsg.message = Buffer.alloc(msgLen)
       buf.copy(decodedMsg.message, 0, MSG_FROM_DEVICE_OVERHEAD, MSG_FROM_DEVICE_OVERHEAD + msgLen)
     }
   } else {
     _.assign(decodedMsg, { errMsg: 'message was truncated', errCode: 'MESSAGE_TRUNCATED' })
   }
-  return decodedMsg;
+  return decodedMsg
 }
 
 main()
