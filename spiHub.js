@@ -31,9 +31,6 @@ const SPI_HUB_CMD_DEVICES_LIST    = 100
 const MSG_TO_DEVICE_OVERHEAD = 6
 const MSG_FROM_DEVICE_OVERHEAD = 9
 
-const nodeVersion = process.version.split('.');
-const isNode6 = nodeVersion.length >= 3 && nodeVersion[0] >= 6;
-
 let ipcServer = undefined
 
 const busMap = new Map(); // busId -> Map<deviceId, deviceInfo>
