@@ -191,8 +191,8 @@ async function createDevicesListMessage() {
     })
   })
 
-  const bufDevicesList = stringToBuffer(JSON.stringify({devices, deviceId, accessCode}))
-  const msgDevicesList = allocBuffer(bufDevicesList.length + 2)
+  const bufDevicesList = Buffer.from(JSON.stringify({devices, deviceId, accessCode}))
+  const msgDevicesList = Buffer.alloc(bufDevicesList.length + 2)
   msgDevicesList.writeUInt8(IPC_PROTO_VERSION, 0)
   msgDevicesList.writeUInt8(SPI_HUB_CMD_DEVICES_LIST, 1)
   bufDevicesList.copy(msgDevicesList, 2)
@@ -237,7 +237,7 @@ function onIPCMessage(event) {
 
 function handleResponseFromDevice(bus, response) {
   const msgLen = (response.message || {}).length || 0
-  const ipcMsg = allocBuffer(msgLen + IPC_DEVICE_MESSAGE_OVERHEAD)
+  const ipcMsg = Buffer.alloc(msgLen + IPC_DEVICE_MESSAGE_OVERHEAD)
   let pos = 0
   ipcMsg.writeUInt8(IPC_PROTO_VERSION, pos++)
   ipcMsg.writeUInt8(SPI_HUB_CMD_MSG_FROM_DEVICE, pos++)
@@ -256,7 +256,7 @@ function encodeMessageToDevice(opts) {
   const msgLen = opts.message ? opts.message.length - msgPos : 0
   const txRequiredLen = msgLen + MSG_TO_DEVICE_OVERHEAD;
   const rxRequiredLen = opts.msgLen ? opts.msgLen + MSG_FROM_DEVICE_OVERHEAD : 0
-  const buffer = allocBuffer(Math.max(txRequiredLen, rxRequiredLen))
+  const buffer = Buffer.alloc(Math.max(txRequiredLen, rxRequiredLen))
   let pos = 0
   buffer.writeUInt8(opts.deviceId, pos++)
   buffer.writeUInt8(opts.nextDeviceId, pos++)
@@ -287,23 +287,13 @@ function decodeMessageFromDevice(buf) {
   const rxMsgLen = buf.length - pos
   if(rxMsgLen >= msgLen) {
     if(msgLen) {
-      decodedMsg.message = allocBuffer(msgLen)
+      decodedMsg.message = Buffer.alloc(msgLen)
       buf.copy(decodedMsg.message, 0, MSG_FROM_DEVICE_OVERHEAD, MSG_FROM_DEVICE_OVERHEAD + msgLen)
     }
   } else {
     _.assign(decodedMsg, { errMsg: 'message was truncated', errCode: 'MESSAGE_TRUNCATED' })
   }
   return decodedMsg;
-}
-
-function allocBuffer(len) {
-  const buf = isNode6 ? Buffer.alloc(len) : new Buffer(len)
-  if(!isNode6) buf.fill(0)
-  return buf
-}
-
-function stringToBuffer(str) {
-  return isNode6 ? Buffer.from(str) : new Buffer(str)
 }
 
 main()
