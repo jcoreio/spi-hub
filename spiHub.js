@@ -11,6 +11,13 @@ const wpi = require('wiring-pi')
 
 const { readDeviceIdAndAccessCode } = require('./readDeviceId')
 
+const DEVICE_INFO_CM8 = { device: 'iron-pi-cm8', version: '1.0.0' }
+const DEVICE_INFO_IO16 = { device: 'iron-pi-io16', version: '1.0.0' }
+const DEVICES_ALL = _.flatten([
+  DEVICE_INFO_CM8,
+  _.range(4).map(() => DEVICE_INFO_IO16)
+]).map((info, idx) => ({ id: idx + 1, info }))
+
 const DEFAULT_POLL_INTERVAL = 200 // 5Hz poll interval
 const POLL_MIN_SLEEP = 50
 const DEFAULT_POLL_MSG_LENGTH = 40
@@ -62,9 +69,6 @@ async function main () {
     buses = busDevEntryPaths.map(path => ({ path }))
   }
 
-  buses.forEach((bus, id) => initSPIBus(_.defaults({}, bus, { id })))
-  devicesListMessage = await createDevicesListMessage()
-
   ipcServer = new ipc.MessageServer('/tmp/socket-spi-hub', { binary: true })
   ipcServer.on('message', onIPCMessage)
   ipcServer.on('connection', onIPCConnection)
@@ -72,19 +76,25 @@ async function main () {
   ipcServer.start()
   console.log('started message server')
 
+  for (let busIdx = 0; busIdx < buses.length; ++busIdx) {
+    await initSPIBus({...buses[busIdx], id: busIdx})
+  }
+  devicesListMessage = await createDevicesListMessage()
+
   while (true) {
     const pollStart = Date.now()
-    busMap.forEach(bus => serviceBus(bus))
+    for (const bus of busMap.values()) {
+      await serviceBus(bus)
+    }
     const elapsed = Date.now() - pollStart
     await sleep(Math.max(POLL_MIN_SLEEP, DEFAULT_POLL_INTERVAL - elapsed))
   }
 }
 
-const devicesInitialized = []
-
-function serviceBus (bus) {
+async function serviceBus (bus, opts = {}) {
+  const {detect} = opts
+  const detectedDevices = detect ? new Set() : null
   const devicesArr = bus.devicesArr
-  if (!devicesArr.length) return
   for (let deviceIdx = 0; deviceIdx < devicesArr.length; ++deviceIdx) {
     const device = devicesArr[deviceIdx]
     let spiBuf
@@ -93,24 +103,25 @@ function serviceBus (bus) {
       spiBuf = encodeMessageToDevice({ deviceId: 0, nextDeviceId: device.id, cmd: SPI_HUB_CMD_NONE })
       // console.log('initial request to device', spiBuf)
       wpi.wiringPiSPIDataRW(bus.id, spiBuf)
+      await sleep(2) // give the device time to process the command
     }
 
     const txQueue = device.txQueue
-    while (!devicesInitialized[deviceIdx] || txQueue.length) {
-    // do {
-      devicesInitialized[deviceIdx] = true
+    while (!device.initialized || txQueue.length) {
+      device.initialized = true
 
       let txMessage = txQueue[0]
       if (txQueue.length) { txQueue.splice(0, 1) }
       let nextDeviceIdx = txQueue.length ? deviceIdx : deviceIdx + 1
       if (nextDeviceIdx >= devicesArr.length) { nextDeviceIdx = 0 }
       const nextDevice = devicesArr[nextDeviceIdx]
-      spiBuf = encodeMessageToDevice(_.assign({}, txMessage, {
+      spiBuf = encodeMessageToDevice({
+        ...txMessage,
         deviceId: device.id,
         nextDeviceId: nextDevice.id,
         cmd: txMessage ? SPI_HUB_CMD_MSG_TO_DEVICE : SPI_HUB_CMD_NONE,
         msgLen: device.nextMsgLen || DEFAULT_POLL_MSG_LENGTH
-      }))
+      })
       // console.log('sending to device: ', spiBuf);
       wpi.wiringPiSPIDataRW(bus.id, spiBuf)
       // console.log('raw device response:', spiBuf);
@@ -122,22 +133,35 @@ function serviceBus (bus) {
       if (!response.errCode) {
         if (deviceMatches) {
           handleResponseFromDevice(bus, response)
+          if (detect)
+            detectedDevices.add(device.id)
+          // console.log(`got valid response from device ${device.id}`)
         } else {
-          console.log(`wrong device id in response from device: expected ${device.id}, got ${response.deviceId}`)
+          if (!detect)
+            console.log(`wrong device id in response from device: expected ${device.id}, got ${response.deviceId}`)
         }
       } else {
-        console.log(`error code ${response.errCode} when decoding response from device ${device.id}: ${response.errMsg}`)
+        if (!detect)
+          console.log(`error code ${response.errCode} when decoding response from device ${device.id}: ${response.errMsg}`)
       }
 
       bus.nextDeviceId = nextDevice.id
     }
-    // } while(txQueue.length)
+  }
+
+  if (detect) {
+    bus.devicesArr = devicesArr.filter(device => detectedDevices.has(device.id))
+    bus.devicesMap.clear()
+    bus.devicesArr.forEach(device => bus.devicesMap.set(device.id, device))
+    for (const device of bus.devicesArr) {
+      console.log(`detected: id ${device.id} model ${device.info.device}`)
+    }
   }
 }
 
 let gpioInitialized = false
 
-function initSPIBus (bus) {
+async function initSPIBus (bus) {
   try {
     wpi.wiringPiSPISetup(bus.id, bus.speed || DEFAULT_SPI_SPEED)
 
@@ -151,18 +175,16 @@ function initSPIBus (bus) {
       wpi.wiringPiISR(bus.irqPin, activeLow ? wpi.INT_EDGE_FALLING : wpi.INT_EDGE_RISING, () => spiBusIRQ(bus))
     }
 
-    const devicesArr = [
-      { id: 1, info: { id: 'iron-pi-cm8-mcu', version: '1.0.0' }, txQueue: [] }
-      // { id: 2, info: { id: 'iron-pi-io16',    version: '1.0.0' }, txQueue: [] }
-    ]
-    const devicesMap = new Map()
-    devicesArr.forEach(device => devicesMap.set(device.id, device))
-    busMap.set(bus.id, {
+    const devicesArr = DEVICES_ALL.map((deviceDef) => ({ ...deviceDef, txQueue: [] }))
+
+    const busMapEntry = {
       id: bus.id,
       config: bus,
       devicesArr,
-      devicesMap
-    })
+      devicesMap: new Map(),
+    }
+    busMap.set(bus.id, busMapEntry)
+    await serviceBus(busMapEntry, {detect: true})
   } catch (err) {
     console.error(`could not initialize SPI bus at ${bus.path}:`, err.stack)
   }
@@ -194,7 +216,8 @@ async function createDevicesListMessage () {
 }
 
 function onIPCConnection (connection) {
-  connection.send(devicesListMessage)
+  if (devicesListMessage)
+    connection.send(devicesListMessage)
 }
 
 function onIPCMessage (event) {
