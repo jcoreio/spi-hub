@@ -9,17 +9,15 @@ const fs = require('fs')
 const ipc = require('socket-ipc')
 const wpi = require('wiring-pi')
 
-const { readDeviceIdAndAccessCode } = require('./readDeviceId')
+const { readSerialNumberAndAccessCode } = require('./readSerialNumber')
 
-const DEVICE_INFO_CM8 = { device: 'iron-pi-cm8', version: '1.0.0' }
-const DEVICE_INFO_IO16 = { device: 'iron-pi-io16', version: '1.0.0' }
+const DEVICE_INFO_CM8 = { model: 'iron-pi-cm8', version: '1.0.0' }
+const DEVICE_INFO_IO16 = { model: 'iron-pi-io16', version: '1.0.0' }
 const DEVICES_ALL = _.flatten([
   DEVICE_INFO_CM8,
   _.range(4).map(() => DEVICE_INFO_IO16)
 ]).map((info, idx) => ({ id: idx + 1, info }))
 
-const DEFAULT_POLL_INTERVAL = 200 // 5Hz poll interval
-const POLL_MIN_SLEEP = 50
 const DEFAULT_POLL_MSG_LENGTH = 40
 
 const DEFAULT_SPI_SPEED = 1000000 // 1MHz
@@ -80,14 +78,30 @@ async function main () {
     await initSPIBus({...buses[busIdx], id: busIdx})
   }
   devicesListMessage = await createDevicesListMessage()
+}
 
-  while (true) {
-    const pollStart = Date.now()
-    for (const bus of busMap.values()) {
-      await serviceBus(bus)
-    }
-    const elapsed = Date.now() - pollStart
-    await sleep(Math.max(POLL_MIN_SLEEP, DEFAULT_POLL_INTERVAL - elapsed))
+let _serviceBusesRepeat = false
+let _serviceBusesInProgress = false
+
+async function serviceBuses({isPoll} = {}) {
+  if (_serviceBusesInProgress) {
+    if (!isPoll)
+      _serviceBusesRepeat = true
+    return
+  }
+  try {
+    _serviceBusesInProgress = true
+    let sanityCount = 10
+    do {
+      _serviceBusesRepeat = false
+      if (--sanityCount <= 0)
+        throw Error('infinite loop in serviceBuses()')
+      for (const bus of busMap.values()) {
+        await serviceBus(bus)
+      }
+    } while (_serviceBusesRepeat)
+  } finally {
+    _serviceBusesInProgress = false
   }
 }
 
@@ -107,9 +121,7 @@ async function serviceBus (bus, opts = {}) {
     }
 
     const txQueue = device.txQueue
-    while (!device.initialized || txQueue.length) {
-      device.initialized = true
-
+    do {
       let txMessage = txQueue[0]
       if (txQueue.length) { txQueue.splice(0, 1) }
       let nextDeviceIdx = txQueue.length ? deviceIdx : deviceIdx + 1
@@ -141,12 +153,12 @@ async function serviceBus (bus, opts = {}) {
             console.log(`wrong device id in response from device: expected ${device.id}, got ${response.deviceId}`)
         }
       } else {
-        if (!detect)
+        //if (!detect)
           console.log(`error code ${response.errCode} when decoding response from device ${device.id}: ${response.errMsg}`)
       }
 
       bus.nextDeviceId = nextDevice.id
-    }
+    } while(txQueue.length)
   }
 
   if (detect) {
@@ -154,7 +166,7 @@ async function serviceBus (bus, opts = {}) {
     bus.devicesMap.clear()
     bus.devicesArr.forEach(device => bus.devicesMap.set(device.id, device))
     for (const device of bus.devicesArr) {
-      console.log(`detected: id ${device.id} model ${device.info.device}`)
+      console.log(`detected: id ${device.id} model ${device.info.model}`)
     }
   }
 }
@@ -198,16 +210,16 @@ function spiBusIRQ (bus) {
 }
 
 async function createDevicesListMessage () {
-  const { deviceId, accessCode } = await readDeviceIdAndAccessCode()
+  const { serialNumber, accessCode } = await readSerialNumberAndAccessCode()
 
   const devices = []
   busMap.forEach((bus, busId) => {
     bus.devicesArr.forEach(device => {
-      devices.push({ bus: busId, device: device.id, info: device.info })
+      devices.push({ busId: busId, deviceId: device.id, deviceInfo: device.info })
     })
   })
 
-  const bufDevicesList = Buffer.from(JSON.stringify({ devices, deviceId, accessCode }))
+  const bufDevicesList = Buffer.from(JSON.stringify({ devices, serialNumber, accessCode }))
   const msgDevicesList = Buffer.alloc(bufDevicesList.length + 2)
   msgDevicesList.writeUInt8(IPC_PROTO_VERSION, 0)
   msgDevicesList.writeUInt8(SPI_HUB_CMD_DEVICES_LIST, 1)
@@ -250,6 +262,9 @@ function onIPCMessage (event) {
         msgLen: message.length - pos,
         msgPos: pos })
     }
+
+    serviceBuses()
+      .catch(err => console.error('unexpected error from serviceBuses() called by onIPCMessage():', err))
   } catch (err) {
     console.error('error handling IPC message: ', err.stack)
   }
